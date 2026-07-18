@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Snapshot Analyzer (Every 3s)</title>
+    <title>AI Snapshot Analyzer v2</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
@@ -81,7 +81,6 @@
             text-align: left;
         }
 
-        /* โซนการแสดงผลภาพ */
         .viewport-wrapper {
             position: relative;
             width: 320px;
@@ -94,20 +93,19 @@
             display: none;
         }
 
-        /* ซ่อน Video ตัวจริงไว้ในระบบดึงภาพ */
-        #hidden-video {
-            display: none;
-        }
-
-        /* ใช้ Canvas ในการ Render ภาพนิ่งที่หยุดเป็นวิ ๆ แทน */
-        #display-canvas {
+        /* ใช้กล้องจากแท็ก Video มาตรฐาน ไม่ผ่านระบบดัดแปลงของไลบรารี */
+        #webcam-video {
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1); /* Mirror Effect */
+            transform: scaleX(-1);
         }
 
-        /* เอฟเฟกต์การกะพริบตา/แฟลชตอนกดถ่าย */
+        /* Canvas ซ่อนในระบบสำหรับดึงเฉพาะเฟรมภาพไปส่งให้ AI */
+        #capture-canvas {
+            display: none;
+        }
+
         .shutter-flash {
             position: absolute;
             top: 0; left: 0; width: 100%; height: 100%;
@@ -117,7 +115,6 @@
             z-index: 5;
         }
 
-        /* ตัวบอกสถานะนับถอยหลัง */
         .status-overlay {
             position: absolute;
             bottom: 15px;
@@ -131,13 +128,13 @@
             letter-spacing: 0.05em;
             border: 1px solid rgba(255, 255, 255, 0.1);
             color: #f59e0b;
+            white-space: nowrap;
         }
 
         .status-overlay.analyzing {
             color: var(--primary);
         }
 
-        /* ส่วนแสดงผลกราฟ AI */
         #result-box {
             margin-top: 1.5rem;
             text-align: left;
@@ -192,38 +189,38 @@
 
     <div class="app-card">
         <h1>AI Snapshot Analyzer</h1>
-        <div class="desc">ถ่ายภาพและล็อกวิเคราะห์ทุก ๆ 3 วินาที (เห็นผลต่างชัดเจน)</div>
+        <div class="desc">วิเคราะห์ภาพจากกล้องสลับหยุดนิ่งทุก ๆ 3 วินาที</div>
         
-        <button type="button" class="btn-action" id="start-btn" onclick="setupApplication()">เริ่มต้นใช้งานระบบ</button>
+        <button type="button" class="btn-action" id="start-btn" onclick="startApp()">เปิดกล้องและเริ่มทำงาน</button>
         <div id="error-box"></div>
 
         <div class="viewport-wrapper" id="view-zone">
-            <video id="hidden-video" autoplay playsinline></video>
-            <canvas id="display-canvas"></canvas>
+            <video id="webcam-video" autoplay playsinline muted></video>
+            <canvas id="capture-canvas" width="320" height="320"></canvas>
             <div class="shutter-flash" id="flash"></div>
-            <div class="status-overlay" id="status-text">กำลังเตรียมระบบ...</div>
+            <div class="status-overlay" id="status-text">กำลังโหลด...</div>
         </div>
 
         <div id="result-box"></div>
     </div>
 
-    <!-- ลิงก์ไลบรารีของ Google Teachable Machine -->
+    <!-- โหลดเฉพาะคอมโพเนนต์ที่จำเป็นของ Tensorflow -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
 
     <script>
+        // ลิงก์โมเดล Teachable Machine
         const MODEL_URL = "https://teachablemachine.withgoogle.com/models/CT2LE_f9w/";
         
         let model, maxClasses;
         let video, canvas, ctx, flash, statusText, startBtn, errorBox;
-        let isRunning = false;
-        let secondsLeft = 3;
+        let countdown = 3;
 
-        async function setupApplication() {
+        async function startApp() {
             startBtn = document.getElementById('start-btn');
             errorBox = document.getElementById('error-box');
-            video = document.getElementById('hidden-video');
-            canvas = document.getElementById('display-canvas');
+            video = document.getElementById('webcam-video');
+            canvas = document.getElementById('capture-canvas');
             ctx = canvas.getContext('2d');
             flash = document.getElementById('flash');
             statusText = document.getElementById('status-text');
@@ -233,115 +230,114 @@
             startBtn.disabled = true;
 
             try {
-                // 1. โหลดโมเดล
+                // 1. โหลดโมเดล AI
                 model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
                 maxClasses = model.getTotalClasses();
 
-                // 2. ขอสิทธิ์เปิดกล้อง (Standard Web API)
-                startBtn.innerText = "กำลังร้องขอเข้าถึงกล้อง...";
+                // 2. เปิดกล้องด้วยคำสั่งมาตรฐานเสถียรสูง รองรับทุกเบราว์เซอร์
+                startBtn.innerText = "กำลังเรียกเปิดกล้อง...";
                 const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { width: 640, height: 640, facingMode: "user" }, 
+                    video: { 
+                        width: { ideal: 640 }, 
+                        height: { ideal: 640 },
+                        facingMode: "user" 
+                    }, 
                     audio: false 
                 });
                 
                 video.srcObject = stream;
                 
-                // รอจนกว่ากล้องจะส่ง Metadata ภาพมา
-                video.onloadedmetadata = () => {
-                    canvas.width = 320;
-                    canvas.height = 320;
-                    
-                    // ปรับ UI
+                // รอสัญญาณภาพจากกล้องมาถึงจริง ๆ
+                video.onloadeddata = () => {
+                    // ปรับหน้าจอเปลี่ยนจากปุ่มกดมาเป็นหน้าต่างกล้อง
                     startBtn.style.display = 'none';
                     document.getElementById('view-zone').style.display = 'block';
                     
-                    isRunning = true;
-                    renderLiveVideo(); // เริ่มสตรีมภาพสดลง canvas
-                    initSnapshotEngine(); // เริ่มระบบกลไกหน่วงเวลา 3 วินาที
+                    createUIResultCards();
+                    runEngine(); // เริ่มต้นนับเวลาถ่ายภาพ
                 };
 
-                // สร้าง Elements สำหรับแสดงผลลัพธ์
-                const resultBox = document.getElementById('result-box');
-                for (let i = 0; i < maxClasses; i++) {
-                    const div = document.createElement('div');
-                    div.className = 'output-card';
-                    div.innerHTML = `
-                        <div class="info-row">
-                            <span class="class-title">กำลังรอคอยภาพ...</span>
-                            <span class="pct-val">0%</span>
-                        </div>
-                        <div class="bar-container"><div class="bar-fill"></div></div>
-                    `;
-                    resultBox.appendChild(div);
-                }
-
             } catch (err) {
-                console.error(err);
-                startBtn.innerText = "เริ่มต้นใช้งานระบบ";
+                console.error("Error details:", err);
+                startBtn.innerText = "เปิดกล้องและเริ่มทำงาน";
                 startBtn.disabled = false;
                 errorBox.style.display = 'block';
                 errorBox.innerHTML = `
-                    <strong>ไม่สามารถเริ่มระบบได้เนื่องจาก:</strong><br>
-                    - บราวเซอร์ปฏิเสธการเข้าถึงกล้อง (กรุณากดอนุญาตสิทธิ์เว็บแคม)<br>
-                    - หากเปิดไฟล์ HTML ตรงๆ ให้ลองเปิดผ่าน Local Server เช่น <b>Live Server</b> ใน VS Code ครับ
+                    <strong>ไม่สามารถเปิดกล้องได้เนื่องจาก:</strong><br>
+                    1. คุณอาจปฏิเสธการเข้าถึงสิทธิ์กล้อง (กรุณากดอนุญาตสิทธิ์เว็บแคม)<br>
+                    2. หากเปิดไฟล์ .html ตรง ๆ ในเครื่อง ให้ลองเปิดรันผ่าน <b>Live Server</b> ในโปรแกรม VS Code ครับ
                 `;
             }
         }
 
-        // วาดภาพจากสตรีมกล้องลงสู่ Canvas แบบต่อเนื่อง
-        function renderLiveVideo() {
-            if (!isRunning) return;
-            
-            // วาดเฉพาะตอนที่ระบบไม่ได้สั่ง "Freeze/หยุดนิ่งเพื่อวิเคราะห์ภาพ"
-            if (secondsLeft > 0) {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // สร้างการ์ดแสดงผลลัพธ์คลาส AI
+        function createUIResultCards() {
+            const resultBox = document.getElementById('result-box');
+            resultBox.innerHTML = ""; // ล้างค่าเก่า
+            for (let i = 0; i < maxClasses; i++) {
+                const div = document.createElement('div');
+                div.className = 'output-card';
+                div.innerHTML = `
+                    <div class="info-row">
+                        <span class="class-title">รอสแกน...</span>
+                        <span class="pct-val">0%</span>
+                    </div>
+                    <div class="bar-container"><div class="bar-fill"></div></div>
+                `;
+                resultBox.appendChild(div);
             }
-            
-            requestAnimationFrame(renderLiveVideo);
         }
 
-        // กลไกหลัก: ควบคุมเวลาการหน่วงถ่ายภาพทุกๆ 3 วินาทีแบบหยุดนิ่ง
-        function initSnapshotEngine() {
-            // ฟังก์ชัน Loop นับถอยหลังในใจ 1 วินาทีเรื่อยๆ
+        // กลไกหลักคอยจับเวลา 3 วินาที
+        function runEngine() {
+            // ทำการตรวจจับครั้งแรกทันที
+            processImageAnalysis();
+
             setInterval(async () => {
-                if (!isRunning) return;
+                countdown--;
 
-                secondsLeft--;
-
-                if (secondsLeft > 0) {
-                    // สถานะสตรีมกล้องปกติ กำลังนับถอยหลัง
+                if (countdown > 0) {
+                    // สตรีมวิดีโอทำงานปกติ
+                    video.play(); 
                     statusText.className = "status-overlay";
-                    statusText.innerText = `📸 จับภาพใน ${secondsLeft} วินาที`;
-                } else if (secondsLeft === 0) {
-                    // วินาทีที่ 0: ทำการ Freeze ล็อกภาพหน้าจอทันที + ยิงแฟลชชัตเตอร์
+                    statusText.innerText = `📸 จับภาพใน ${countdown} วินาที`;
+                } 
+                else if (countdown === 0) {
+                    // วินาทีที่ 0: สั่ง Freeze หยุดวิดีโอไว้กับที่ + ยิงแฟลช
+                    video.pause();
                     statusText.className = "status-overlay analyzing";
-                    statusText.innerText = "⚡ กำลังประมวลผล...";
+                    statusText.innerText = "⚡ กำลังวิเคราะห์ภาพ...";
 
                     // เล่นเอฟเฟกต์แฟลชกล้อง
+                    flash.style.transition = 'none';
                     flash.style.opacity = '1';
                     setTimeout(() => {
-                        flash.style.transition = 'opacity 0.5s ease';
+                        flash.style.transition = 'opacity 0.4s ease';
                         flash.style.opacity = '0';
                     }, 50);
-                    // รีเซ็ตคุณสมบัติอนิเมชันแฟลช
-                    flash.style.transition = 'none'; 
 
-                    // นำภาพนิ่งล่าสุดบนแคนวาสขณะนั้น ส่งเข้า AI ทำนายผล
-                    await runAIAnalysis();
-                } else {
-                    // วินาทีติดลบ (ช่วงแสดงภาพค้างไว้ให้ดูผลต่าง) ครบ 3 วินาทีแล้ว สั่งเริ่มรอบใหม่
-                    secondsLeft = 3;
+                    // วาดภาพนิ่ง ณ วินาทีนั้นเข้า Canvas และส่งให้ AI ตรวจสอบ
+                    await processImageAnalysis();
+                } 
+                else {
+                    // ปล่อยให้ภาพค้างไว้แสดงผลต่างจนสิ้นสุดช่วงเวลา แล้วกลับไปเริ่มนับใหม่
+                    countdown = 3;
+                    video.play();
                     statusText.className = "status-overlay";
-                    statusText.innerText = `📸 จับภาพใน ${secondsLeft} วินาที`;
+                    statusText.innerText = `📸 จับภาพใน ${countdown} วินาที`;
                 }
             }, 1000);
         }
 
-        // ส่งรูปภาพนิ่งไปคำนวณที่ตัวโมเดล Teachable Machine
-        async function runAIAnalysis() {
+        // วาดรูปส่งหาโมเดล AI และอัปเดตสถานะหลอดพลัง
+        async function processImageAnalysis() {
+            // ดึงเฟรมภาพปัจจุบันของกล้องมาวาดลงบน Canvas ลับ
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // ส่งภาพบน Canvas ไปวิเคราะห์กับ Teachable Machine
             const predictions = await model.predict(canvas);
             
-            // ค้นหาดัชนีที่มีความน่าจะเป็นสูงสุด
+            // ค้นหาตัวเลือกที่มีค่าสูงที่สุด
             let topIndex = 0;
             let topValue = 0;
             for (let i = 0; i < maxClasses; i++) {
@@ -351,7 +347,7 @@
                 }
             }
 
-            // แสดงค่าเปอร์เซ็นต์บนหน้าจอแบบคงค้างไว้ 3 วินาที
+            // แสดงค่าเปอร์เซ็นต์บนหน้าจอแบบนิ่งไว้ค้าง 3 วินาที
             const resultBox = document.getElementById('result-box');
             for (let i = 0; i < maxClasses; i++) {
                 const name = predictions[i].className;
@@ -359,14 +355,16 @@
                 const pct = (prob * 100).toFixed(0) + "%";
                 
                 const card = resultBox.childNodes[i];
-                card.querySelector('.class-title').innerText = name;
-                card.querySelector('.pct-val').innerText = pct;
-                card.querySelector('.bar-fill').style.width = pct;
+                if(card) {
+                    card.querySelector('.class-title').innerText = name;
+                    card.querySelector('.pct-val').innerText = pct;
+                    card.querySelector('.bar-fill').style.width = pct;
 
-                if (i === topIndex && prob > 0.15) {
-                    card.classList.add('active');
-                } else {
-                    card.classList.remove('active');
+                    if (i === topIndex && prob > 0.15) {
+                        card.classList.add('active');
+                    } else {
+                        card.classList.remove('active');
+                    }
                 }
             }
         }
